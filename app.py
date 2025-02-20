@@ -81,7 +81,7 @@ class BasicTracker:
         self.bbox = None
         self.template = None
         self.method = cv2.TM_CCOEFF_NORMED
-        self.confidence_threshold = 0.5
+        self.confidence_threshold = 0.7  # Adjust lower if needed
         logger.info("Using BasicTracker fallback")
     
     def init(self, frame, bbox):
@@ -106,7 +106,7 @@ class BasicTracker:
             logger.warning("BasicTracker update failed: No template or bbox")
             return False, self.bbox
         x, y, w, h = [int(v) for v in self.bbox]
-        search_factor = 2.5
+        search_factor = 3.0  # Increased for better tracking of moving objects
         search_x = max(0, x - int(w * search_factor / 2))
         search_y = max(0, y - int(h * search_factor / 2))
         search_w = min(frame.shape[1] - search_x, int(w * search_factor))
