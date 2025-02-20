@@ -1,0 +1,1 @@
+OPENCV_AVFOUNDATION_SKIP_AUTH=1 python3 app.py
