@@ -2,226 +2,83 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Drone Simulation Tracking Interface</title>
-    <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; background-color: #f4f4f4; }
-        .container { max-width: 1200px; margin: 20px auto; padding: 20px; text-align: center; }
-        #videoContainer { position: relative; margin: 20px auto; width: 640px; height: 480px; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; background-color: #000; }
-        #videoFeed { width: 100%; height: 100%; }
-        #canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
-        .controls { margin-top: 20px; }
-        button { padding: 10px 20px; margin: 5px; font-size: 16px; cursor: pointer; background-color: #4CAF50; color: white; border: none; border-radius: 4px; transition: background-color 0.3s; }
-        button:disabled { background-color: #cccccc; cursor: not-allowed; }
-        button:hover:not(:disabled) { background-color: #45a049; }
-        #cameraStatus { margin: 10px 0; padding: 10px; border-radius: 4px; display: none; max-width: 640px; margin-left: auto; margin-right: auto; }
-        .error { background-color: #f2dede; color: #a94442; border: 1px solid #ebccd1; }
-        .success { background-color: #dff0d8; color: #3c763d; border: 1px solid #d6e9c6; }
-        .info { background-color: #d9edf7; color: #31708f; border: 1px solid #bce8f1; }
-    </style>
+    <title>Object Tracking App</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="container">
-        <h1>Drone Simulation Tracking Interface</h1>
-        
-        <button id="initDroneSim">Initialize Drone Simulation</button>
-        <div id="cameraStatus"></div>
-
-        <div id="videoContainer">
-            <img id="videoFeed" alt="Drone Feed" style="display: none;">
-            <canvas id="canvas" style="display: none;"></canvas>
-        </div>
-        
+        <h1>Object Tracking App</h1>
+        <img id="videoFeed" src="/video_feed" alt="Video Feed">
         <div class="controls">
-            <button id="togglePause" disabled>Pause</button>
-            <button id="selectObject" disabled>Select Object</button>
-            <button id="startTracking" disabled>Start Tracking</button>
-            <button id="stopTracking" disabled>Stop Tracking</button>
-            <button id="checkStatus">Check Status</button>
+            <button onclick="initCamera()">Initialize Camera</button>
+            <button onclick="detectObjects()">Detect Objects</button>
+            <button onclick="startTracking()">Start Tracking</button>
+            <button onclick="stopTracking()">Stop Tracking</button>
         </div>
+        <div id="status">Status: Idle</div>
+        <div id="objects"></div>
     </div>
 
     <script>
-        let isDrawing = false;
-        let startX, startY;
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        let selectedBox = null;
-        const videoFeed = document.getElementById('videoFeed');
-        let isPaused = false;
+        const video = document.getElementById('videoFeed');
+        const status = document.getElementById('status');
+        const objectsDiv = document.getElementById('objects');
+        let selectedBbox = null;
 
-        function showStatus(message, type = 'info') {
-            const statusElement = document.getElementById('cameraStatus');
-            statusElement.textContent = message;
-            statusElement.style.display = 'block';
-            statusElement.className = type;
-            setTimeout(() => statusElement.style.display = 'none', 5000);
-        }
+        video.addEventListener('click', (e) => {
+            const rect = video.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            // For simplicity, assume a fixed size bbox
+            selectedBbox = [x - 25, y - 25, 50, 50];
+            status.textContent = `Selected bbox: ${selectedBbox}`;
+        });
 
-        async function handleResponse(response) {
-            if (!response.ok) {
-                const contentType = response.headers.get("content-type");
-                if (contentType && contentType.indexOf("application/json") !== -1) {
-                    const error = await response.json();
-                    throw new Error(error.message || `HTTP error! status: ${response.status}`);
-                } else {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-            }
+        async function initCamera() {
+            const response = await fetch('/init_camera', { method: 'POST' });
             const result = await response.json();
-            if (result.status === 'error') throw new Error(result.message || 'Unknown error occurred');
-            return result;
+            status.textContent = result.status === 'success' ? 'Status: Camera Initialized' : `Status: ${result.message}`;
         }
 
-        async function makeRequest(url, method = 'POST', data = null) {
-            try {
-                const options = { method };
-                if (data) {
-                    options.headers = { 'Content-Type': 'application/json' };
-                    options.body = JSON.stringify(data);
-                }
-                const response = await fetch(url, options);
-                return await handleResponse(response);
-            } catch (error) {
-                showStatus(`Error: ${error.message}`, 'error');
-                throw error;
+        async function detectObjects() {
+            const response = await fetch('/detect_objects', { method: 'POST' });
+            const result = await response.json();
+            if (result.status === 'success') {
+                objectsDiv.innerHTML = '';
+                result.objects.forEach((obj, index) => {
+                    const div = document.createElement('div');
+                    div.className = 'object-option';
+                    div.textContent = `${obj.label} (Confidence: ${obj.confidence.toFixed(2)})`;
+                    div.onclick = () => {
+                        selectedBbox = obj.bbox;
+                        status.textContent = `Selected ${obj.label} at ${selectedBbox}`;
+                    };
+                    objectsDiv.appendChild(div);
+                });
+            } else {
+                status.textContent = `Status: ${result.message}`;
             }
         }
 
-        function resizeCanvas() {
-            const rect = videoFeed.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
-        }
-
-        document.getElementById('initDroneSim').addEventListener('click', async () => {
-            try {
-                await makeRequest('/init_drone_sim');
-                videoFeed.style.display = 'block';
-                canvas.style.display = 'block';
-                videoFeed.src = "/video_feed";
-                resizeCanvas();
-                document.getElementById('selectObject').disabled = false;
-                document.getElementById('stopTracking').disabled = false;
-                document.getElementById('togglePause').disabled = false;
-                document.getElementById('initDroneSim').disabled = true;
-                isPaused = false;
-                document.getElementById('togglePause').textContent = 'Pause';
-                showStatus('Drone simulation initialized successfully!', 'success');
-            } catch (error) {
-                showStatus(`Error initializing drone simulation: ${error.message}`, 'error');
-            }
-        });
-
-        document.getElementById('togglePause').addEventListener('click', async () => {
-            try {
-                isPaused = !isPaused;
-                await makeRequest('/toggle_pause', 'POST', { pause: isPaused });
-                document.getElementById('togglePause').textContent = isPaused ? 'Play' : 'Pause';
-                showStatus(isPaused ? 'Drone feed paused' : 'Drone feed playing', 'info');
-            } catch (error) {
-                showStatus(`Error toggling pause: ${error.message}`, 'error');
-            }
-        });
-
-        document.getElementById('selectObject').addEventListener('click', () => {
-            isDrawing = true;
-            canvas.style.cursor = 'crosshair';
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            selectedBox = null;
-            document.getElementById('startTracking').disabled = true;
-            showStatus('Draw a box around the object you want to track', 'info');
-        });
-
-        canvas.addEventListener('mousedown', (e) => {
-            if (!isDrawing) return;
-            const rect = canvas.getBoundingClientRect();
-            startX = e.clientX - rect.left;
-            startY = e.clientY - rect.top;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-        });
-
-        canvas.addEventListener('mousemove', (e) => {
-            if (!isDrawing) return;
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.strokeStyle = '#00ff00';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(startX, startY, x - startX, y - startY);
-        });
-
-        canvas.addEventListener('mouseup', (e) => {
-            if (!isDrawing) return;
-            const rect = canvas.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            const width = Math.abs(x - startX);
-            const height = Math.abs(y - startY);
-            const minX = Math.min(startX, x);
-            const minY = Math.min(startY, y);
-            const MIN_SIZE = 10;
-            if (width < MIN_SIZE || height < MIN_SIZE) {
-                showStatus(`Selection too small! Minimum size is ${MIN_SIZE}x${MIN_SIZE} pixels`, 'error');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                isDrawing = false;
-                canvas.style.cursor = 'default';
+        async function startTracking() {
+            if (!selectedBbox) {
+                status.textContent = 'Status: Please select an object first';
                 return;
             }
-            selectedBox = [minX, minY, width, height];
-            isDrawing = false;
-            canvas.style.cursor = 'default';
-            document.getElementById('startTracking').disabled = false;
-            showStatus('Object selected. Click "Start Tracking" to begin.', 'success');
-        });
+            const response = await fetch('/start_tracking', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ bbox: selectedBbox })
+            });
+            const result = await response.json();
+            status.textContent = result.status === 'success' ? 'Status: Tracking Started' : `Status: ${result.message}`;
+        }
 
-        document.getElementById('startTracking').addEventListener('click', async () => {
-            try {
-                if (!selectedBox) {
-                    showStatus('Please select an object first', 'error');
-                    return;
-                }
-                await makeRequest('/start_tracking', 'POST', { bbox: selectedBox });
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                selectedBox = null;
-                document.getElementById('startTracking').disabled = true;
-                document.getElementById('selectObject').disabled = true;
-                if (isPaused) {
-                    isPaused = false;
-                    await makeRequest('/toggle_pause', 'POST', { pause: false });
-                    document.getElementById('togglePause').textContent = 'Pause';
-                }
-                showStatus('Tracking started successfully!', 'success');
-            } catch (error) {
-                showStatus(`Error starting tracking: ${error.message}`, 'error');
-            }
-        });
-
-        document.getElementById('stopTracking').addEventListener('click', async () => {
-            try {
-                await makeRequest('/stop_tracking', 'POST', {});
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                selectedBox = null;
-                document.getElementById('startTracking').disabled = true;
-                document.getElementById('selectObject').disabled = false;
-                showStatus('Tracking stopped successfully!', 'success');
-            } catch (error) {
-                showStatus(`Error stopping tracking: ${error.message}`, 'error');
-            }
-        });
-
-        document.getElementById('checkStatus').addEventListener('click', async () => {
-            try {
-                const status = await makeRequest('/check_status', 'GET');
-                showStatus(`Source: ${status.source_type}, Status: ${status.source_status}, Tracking: ${status.tracking}, Paused: ${status.is_paused}, Drone Pos: (${status.drone_pos.x.toFixed(2)}, ${status.drone_pos.y.toFixed(2)}, ${status.drone_pos.z.toFixed(2)}), OpenCV: ${status.opencv_version}`, 'info');
-            } catch (error) {
-                showStatus(`Error checking status: ${error.message}`, 'error');
-            }
-        });
-
-        window.addEventListener('resize', resizeCanvas);
-        canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+        async function stopTracking() {
+            const response = await fetch('/stop_tracking', { method: 'POST' });
+            const result = await response.json();
+            status.textContent = result.status === 'success' ? 'Status: Tracking Stopped' : `Status: ${result.message}`;
+        }
     </script>
 </body>
 </html>

@@ -185,7 +185,13 @@ pyrightconfig.json
 pyvenv.cfg
 pip-selfcheck.json
 
-goturn.caffemodel
-goturn.prototxt
+goturn/goturn.caffemodel
+goturn/goturn.prototxt
+models/coco.names
+models/yolov3-tiny.cfg
+models/yolov3-tiny.weights
+r.txt
+test.py
+tracker.py
 
 # End of https://www.toptal.com/developers/gitignore/api/python,venv

@@ -1,0 +1,54 @@
+body {
+    font-family: Arial, sans-serif;
+    margin: 20px;
+    background-color: #f0f0f0;
+}
+
+.container {
+    max-width: 640px;
+    margin: auto;
+    position: relative;
+}
+
+#videoFeed {
+    width: 100%;
+    border: 2px solid #333;
+}
+
+.controls {
+    margin-top: 20px;
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+button {
+    padding: 10px 20px;
+    background-color: #4CAF50;
+    color: white;
+    border: none;
+    cursor: pointer;
+}
+
+button:hover {
+    background-color: #45a049;
+}
+
+#status {
+    margin-top: 10px;
+    font-weight: bold;
+}
+
+#objects {
+    margin-top: 10px;
+}
+
+.object-option {
+    padding: 5px;
+    border: 1px solid #ccc;
+    cursor: pointer;
+}
+
+.object-option:hover {
+    background-color: #ddd;
+}
