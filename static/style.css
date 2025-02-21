@@ -10,9 +10,21 @@ body {
     position: relative;
 }
 
+.video-container {
+    position: relative;
+    display: inline-block;
+}
+
 #videoFeed {
     width: 100%;
     border: 2px solid #333;
+}
+
+#overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
 }
 
 .controls {
@@ -20,6 +32,7 @@ body {
     display: flex;
     gap: 10px;
     flex-wrap: wrap;
+    align-items: center;
 }
 
 button {
@@ -32,6 +45,13 @@ button {
 
 button:hover {
     background-color: #45a049;
+}
+
+select {
+    padding: 10px;
+    font-size: 16px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
 }
 
 #status {
@@ -51,4 +71,23 @@ button:hover {
 
 .object-option:hover {
     background-color: #ddd;
+}
+
+#tracker-info {
+    margin-top: 20px;
+    padding: 10px;
+    border: 1px solid #ccc;
+    background-color: #fff;
+}
+
+#tracker-info h3 {
+    margin: 0 0 10px 0;
+}
+
+#tracker-info p {
+    margin: 5px 0;
+}
+
+#tracker-info span {
+    font-weight: bold;
 }

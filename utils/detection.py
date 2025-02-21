@@ -1,44 +1,44 @@
-import cv2
-import numpy as np
+from ultralytics import YOLO
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class Detection:
-    def __init__(self, weights_path, cfg_path, names_path):
-        """Initialize the YOLO model."""
-        self.net = cv2.dnn.readNet(weights_path, cfg_path)
-        with open(names_path, "r") as f:
-            self.classes = [line.strip() for line in f.readlines()]
-        layer_names = self.net.getLayerNames()
-        self.output_layers = [layer_names[i - 1] for i in self.net.getUnconnectedOutLayers().flatten()]
+    def __init__(self, model_path='yolov8n.pt'):
+        """Initialize the YOLOv8 model."""
+        try:
+            self.model = YOLO(model_path)  # Default to YOLOv8n (nano) for speed
+            logger.info(f"YOLOv8 model loaded successfully from {model_path}")
+        except Exception as e:
+            logger.error(f"Failed to load YOLOv8 model: {e}")
+            raise
 
-    def detect(self, frame):
-        """Detect objects in the given frame using YOLO."""
-        blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
-        self.net.setInput(blob)
-        outs = self.net.forward(self.output_layers)
+    def detect(self, frame, confidence_threshold=0.3):
+        """Detect objects in the given frame using YOLOv8."""
+        try:
+            # Run YOLOv8 inference
+            results = self.model(frame, conf=confidence_threshold)
+            detected_objects = []
 
-        height, width = frame.shape[:2]
-        class_ids, confidences, boxes = [], [], []
-        for out in outs:
-            for detection in out:
-                scores = detection[5:]
-                class_id = np.argmax(scores)
-                confidence = scores[class_id]
-                if confidence > 0.5:
-                    center_x = int(detection[0] * width)
-                    center_y = int(detection[1] * height)
-                    w = int(detection[2] * width)
-                    h = int(detection[3] * height)
-                    x = int(center_x - w / 2)
-                    y = int(center_y - h / 2)
-                    boxes.append([x, y, w, h])
-                    confidences.append(float(confidence))
-                    class_ids.append(class_id)
+            # Process results
+            for result in results:
+                for box in result.boxes:
+                    x, y, w, h = box.xywh[0].tolist()  # xywh format
+                    x, y, w, h = int(x - w / 2), int(y - h / 2), int(w), int(h)  # Convert to xywh corner format
+                    confidence = float(box.conf)
+                    class_id = int(box.cls)
+                    label = self.model.names[class_id]
+                    detected_objects.append({
+                        "label": label,
+                        "bbox": [x, y, w, h],
+                        "confidence": confidence
+                    })
+                    logger.debug(f"Detected: {label} at {x},{y},{w},{h} with confidence {confidence:.2f}")
 
-        indexes = cv2.dnn.NMSBoxes(boxes, confidences, 0.5, 0.4)
-        detected_objects = []
-        for i in range(len(boxes)):
-            if i in indexes:
-                x, y, w, h = boxes[i]
-                label = str(self.classes[class_ids[i]])
-                detected_objects.append({"label": label, "bbox": [x, y, w, h], "confidence": confidences[i]})
-        return detected_objects
+            logger.info(f"Total detected objects: {len(detected_objects)}")
+            return detected_objects
+        except Exception as e:
+            logger.error(f"Detection error: {e}")
+            return []

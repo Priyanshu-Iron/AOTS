@@ -8,7 +8,10 @@
 <body>
     <div class="container">
         <h1>Object Tracking App</h1>
-        <img id="videoFeed" src="/video_feed" alt="Video Feed">
+        <div class="video-container">
+            <img id="videoFeed" src="/video_feed" alt="Video Feed">
+            <canvas id="overlay"></canvas>
+        </div>
         <div class="controls">
             <button onclick="initCamera()">Initialize Camera</button>
             <button onclick="detectObjects()">Detect Objects</button>
@@ -17,21 +20,72 @@
         </div>
         <div id="status">Status: Idle</div>
         <div id="objects"></div>
+        <div id="tracker-info">
+            <h3>Model Info</h3>
+            <p>Detection Model: <span id="detection-model">N/A</span></p>
+            <p>Tracker Type: <span id="tracker-type-display">CSRT</span></p>
+            <p>Tracker Status: <span id="tracker-status">Idle</span></p>
+            <p>Bounding Box: <span id="tracker-bbox">N/A</span></p>
+        </div>
     </div>
 
     <script>
         const video = document.getElementById('videoFeed');
+        const overlay = document.getElementById('overlay');
+        const ctx = overlay.getContext('2d');
         const status = document.getElementById('status');
         const objectsDiv = document.getElementById('objects');
+        const detectionModelSpan = document.getElementById('detection-model');
+        const trackerTypeSpan = document.getElementById('tracker-type-display');
+        const trackerStatusSpan = document.getElementById('tracker-status');
+        const trackerBboxSpan = document.getElementById('tracker-bbox');
+        let selecting = false;
+        let startX, startY, endX, endY;
         let selectedBbox = null;
 
-        video.addEventListener('click', (e) => {
-            const rect = video.getBoundingClientRect();
-            const x = e.clientX - rect.left;
-            const y = e.clientY - rect.top;
-            // For simplicity, assume a fixed size bbox
-            selectedBbox = [x - 25, y - 25, 50, 50];
-            status.textContent = `Selected bbox: ${selectedBbox}`;
+        video.onload = () => {
+            overlay.width = video.clientWidth;
+            overlay.height = video.clientHeight;
+        };
+
+        video.addEventListener('mousedown', (e) => {
+            if (!selecting) {
+                selecting = true;
+                const rect = video.getBoundingClientRect();
+                startX = e.clientX - rect.left;
+                startY = e.clientY - rect.top;
+                console.log(`Selection started at: (${startX}, ${startY})`);
+            }
+        });
+
+        video.addEventListener('mousemove', (e) => {
+            if (selecting) {
+                const rect = video.getBoundingClientRect();
+                endX = e.clientX - rect.left;
+                endY = e.clientY - rect.top;
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+                ctx.strokeStyle = 'yellow';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(startX, startY, endX - startX, endY - startY);
+            }
+        });
+
+        video.addEventListener('mouseup', (e) => {
+            if (selecting) {
+                const rect = video.getBoundingClientRect();
+                endX = e.clientX - rect.left;
+                endY = e.clientY - rect.top;
+                selecting = false;
+                selectedBbox = [
+                    Math.min(startX, endX),
+                    Math.min(startY, endY),
+                    Math.abs(endX - startX),
+                    Math.abs(endY - startY)
+                ];
+                status.textContent = `Selected bbox: ${selectedBbox}`;
+                ctx.clearRect(0, 0, overlay.width, overlay.height);
+                console.log(`Selection ended with bbox: ${selectedBbox}`);
+            }
         });
 
         async function initCamera() {
@@ -78,7 +132,22 @@
             const response = await fetch('/stop_tracking', { method: 'POST' });
             const result = await response.json();
             status.textContent = result.status === 'success' ? 'Status: Tracking Stopped' : `Status: ${result.message}`;
+            selectedBbox = null;
+            updateTrackerInfo();
         }
+
+        async function updateTrackerInfo() {
+            const response = await fetch('/tracker_info');
+            const info = await response.json();
+            detectionModelSpan.textContent = info.detection_model;
+            trackerTypeSpan.textContent = info.type;
+            trackerStatusSpan.textContent = info.status;
+            trackerBboxSpan.textContent = info.bbox ? `${info.bbox[0]}, ${info.bbox[1]}, ${info.bbox[2]}, ${info.bbox[3]}` : 'N/A';
+            console.log(`Tracker Info: Detection=${info.detection_model}, Tracker=${info.type}, Status=${info.status}, BBox=${info.bbox}`);
+        }
+
+        setInterval(updateTrackerInfo, 500);
+        updateTrackerInfo();
     </script>
 </body>
 </html>
