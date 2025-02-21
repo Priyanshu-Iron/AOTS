@@ -2,18 +2,19 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Object Tracking App</title>
+    <title>Anonymous Object Tracking Sysytem</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
     <div class="container">
-        <h1>Object Tracking App</h1>
+        <h1>Anonymous Object Tracking Sysytem</h1>
         <div class="video-container">
             <img id="videoFeed" src="/video_feed" alt="Video Feed">
             <canvas id="overlay"></canvas>
         </div>
         <div class="controls">
             <button onclick="initCamera()">Initialize Camera</button>
+            <button onclick="stopCamera()">Stop Camera</button>
             <button onclick="detectObjects()">Detect Objects</button>
             <button onclick="startTracking()">Start Tracking</button>
             <button onclick="stopTracking()">Stop Tracking</button>
@@ -92,6 +93,12 @@
             const response = await fetch('/init_camera', { method: 'POST' });
             const result = await response.json();
             status.textContent = result.status === 'success' ? 'Status: Camera Initialized' : `Status: ${result.message}`;
+        }
+
+        async function stopCamera() {
+            const response = await fetch('/stop_camera', { method: 'POST' });
+            const result = await response.json();
+            status.textContent = result.status === 'success' ? 'Status: Camera Stopped' : `Status: ${result.message}`;
         }
 
         async function detectObjects() {

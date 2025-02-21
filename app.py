@@ -21,7 +21,7 @@ class Detection:
         """Initialize the YOLOv8 model."""
         try:
             self.model = YOLO(model_path)
-            self.model_name = 'YOLOv8n'  # Store model name for display
+            self.model_name = 'YOLOv8n'
             logger.info(f"Object detection model loaded: {self.model_name} from {model_path}")
         except Exception as e:
             logger.error(f"Failed to load YOLOv8 model: {e}")
@@ -133,6 +133,18 @@ def initialize_camera():
         logger.error(f"Camera reinitialization error: {e}")
         return jsonify({'status': 'error', 'message': str(e)})
 
+@app.route('/stop_camera', methods=['POST'])
+def stop_camera():
+    try:
+        if camera.cap is not None:
+            camera.cap.release()
+            camera.cap = None
+            logger.info("Camera stopped successfully")
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"Camera stop error: {e}")
+        return jsonify({'status': 'error', 'message': str(e)})
+
 @app.route('/detect_objects', methods=['POST'])
 def detect_objects_route():
     global detected_objects
@@ -189,10 +201,10 @@ def generate_frames():
     """Generate frames for video streaming."""
     while True:
         if camera.cap is None or not camera.cap.isOpened():
-            logger.warning("Camera not initialized, waiting...")
+            logger.warning("Camera not initialized or stopped, waiting...")
             time.sleep(0.1)
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, "Camera not initialized", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(frame, "Camera stopped", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
         else:
             frame = camera.get_frame()
             if frame is None:
