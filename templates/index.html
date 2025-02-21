@@ -2,12 +2,13 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Anonymous Object Tracking Sysytem</title>
+    <title>Object Tracking App</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
     <div class="container">
-        <h1>Anonymous Object Tracking Sysytem</h1>
+        <h1>Object Tracking App</h1>
         <div class="video-container">
             <img id="videoFeed" src="/video_feed" alt="Video Feed">
             <canvas id="overlay"></canvas>
@@ -27,6 +28,12 @@
             <p>Tracker Type: <span id="tracker-type-display">CSRT</span></p>
             <p>Tracker Status: <span id="tracker-status">Idle</span></p>
             <p>Bounding Box: <span id="tracker-bbox">N/A</span></p>
+            <p>Memorized Objects: <span id="memorized-objects">None</span></p>
+        </div>
+        <div id="system-stats">
+            <h3>System Stats</h3>
+            <canvas id="cpuChart" width="400" height="200"></canvas>
+            <canvas id="gpuChart" width="400" height="200"></canvas>
         </div>
     </div>
 
@@ -40,6 +47,7 @@
         const trackerTypeSpan = document.getElementById('tracker-type-display');
         const trackerStatusSpan = document.getElementById('tracker-status');
         const trackerBboxSpan = document.getElementById('tracker-bbox');
+        const memorizedObjectsSpan = document.getElementById('memorized-objects');
         let selecting = false;
         let startX, startY, endX, endY;
         let selectedBbox = null;
@@ -126,10 +134,14 @@
                 status.textContent = 'Status: Please select an object first';
                 return;
             }
+            const selectedObj = Array.from(objectsDiv.children).find(div =>
+                div.textContent.includes(status.textContent.split('Selected ')[1].split(' at')[0])
+            );
+            const label = selectedObj ? selectedObj.textContent.split(' (')[0] : 'unknown';
             const response = await fetch('/start_tracking', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ bbox: selectedBbox })
+                body: JSON.stringify({ bbox: selectedBbox, label: label })
             });
             const result = await response.json();
             status.textContent = result.status === 'success' ? 'Status: Tracking Started' : `Status: ${result.message}`;
@@ -150,11 +162,63 @@
             trackerTypeSpan.textContent = info.type;
             trackerStatusSpan.textContent = info.status;
             trackerBboxSpan.textContent = info.bbox ? `${info.bbox[0]}, ${info.bbox[1]}, ${info.bbox[2]}, ${info.bbox[3]}` : 'N/A';
+            memorizedObjectsSpan.textContent = info.memorized_objects.length ? info.memorized_objects.join(', ') : 'None';
             console.log(`Tracker Info: Detection=${info.detection_model}, Tracker=${info.type}, Status=${info.status}, BBox=${info.bbox}`);
         }
 
+        // System Stats Graphs
+        const cpuChartCtx = document.getElementById('cpuChart').getContext('2d');
+        const gpuChartCtx = document.getElementById('gpuChart').getContext('2d');
+        const cpuChart = new Chart(cpuChartCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'CPU Usage (%)',
+                    data: [],
+                    borderColor: 'blue',
+                    fill: false
+                }]
+            },
+            options: { scales: { y: { min: 0, max: 100 } } }
+        });
+        const gpuChart = new Chart(gpuChartCtx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { label: 'GPU Usage (%)', data: [], borderColor: 'green', fill: false },
+                    { label: 'GPU Memory (MB)', data: [], borderColor: 'red', fill: false }
+                ]
+            },
+            options: { scales: { y: { min: 0 } } }
+        });
+
+        async function updateSystemStats() {
+            const response = await fetch('/system_stats');
+            const stats = await response.json();
+            const now = new Date().toLocaleTimeString();
+            cpuChart.data.labels.push(now);
+            cpuChart.data.datasets[0].data.push(stats.cpu_percent);
+            gpuChart.data.labels.push(now);
+            gpuChart.data.datasets[0].data.push(stats.gpu_percent);
+            gpuChart.data.datasets[1].data.push(stats.gpu_mem_used);
+
+            if (cpuChart.data.labels.length > 20) {
+                cpuChart.data.labels.shift();
+                cpuChart.data.datasets[0].data.shift();
+                gpuChart.data.labels.shift();
+                gpuChart.data.datasets[0].data.shift();
+                gpuChart.data.datasets[1].data.shift();
+            }
+            cpuChart.update();
+            gpuChart.update();
+        }
+
         setInterval(updateTrackerInfo, 500);
+        setInterval(updateSystemStats, 1000);
         updateTrackerInfo();
+        updateSystemStats();
     </script>
 </body>
 </html>
