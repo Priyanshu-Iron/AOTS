@@ -52,7 +52,7 @@ Note: `detection.py` and `tracking.py` are included but not used in the optimize
 ## ⚙️ Setup
 1. **🔽 Clone the Repository**:
    ```bash
-   git clone <repository-url>
+   git clone [<repository-url>](https://github.com/Priyanshu-Iron/AOTS)
    cd AOTS
    ```
 
