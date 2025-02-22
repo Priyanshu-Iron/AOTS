@@ -1,14 +1,23 @@
 from flask import Flask, Response, render_template, request, jsonify
 from flask_cors import CORS
-from utils.camera import Camera
 import cv2
 import numpy as np
 import time
 import logging
 import os
-from ultralytics import YOLO
 import psutil
 import pynvml
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
+from PIL import Image
+from collections import deque
+from ultralytics import YOLO
+
+# Import custom classes from utils folder
+from utils.camera import Camera
+from utils.detection import Detection
+from utils.tracking import Tracker
 
 app = Flask(__name__)
 CORS(app)
@@ -17,94 +26,124 @@ CORS(app)
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Initialize NVIDIA Management Library for GPU stats (safe for non-NVIDIA systems)
+# Initialize NVIDIA Management Library for GPU stats
 try:
     pynvml.nvmlInit()
     gpu_available = True
     logger.info("NVIDIA GPU detected and initialized.")
 except pynvml.NVMLError:
     gpu_available = False
-    logger.info("No NVIDIA GPU detected or pynvml not installed. GPU stats will be unavailable.")
+    logger.info("No NVIDIA GPU detected or pynvml not installed.")
 
-# Define Detection class for YOLOv8
-class Detection:
-    def __init__(self, model_path='yolov8n.pt'):
+class FeatureExtractor(nn.Module):
+    def __init__(self, embedding_dim=128):
+        super(FeatureExtractor, self).__init__()
+        self.backbone = torch.hub.load('pytorch/vision:v0.10.0', 'resnet18', pretrained=True)
+        self.backbone.fc = nn.Linear(512, embedding_dim)
+        self.normalize = nn.LayerNorm(embedding_dim)
+
+    def forward(self, x):
+        features = self.backbone(x)
+        return self.normalize(features)
+
+class MLObjectMemory:
+    def __init__(self, max_objects=50, feature_dim=128):
+        self.feature_extractor = FeatureExtractor(embedding_dim=feature_dim)
+        self.feature_extractor.eval()
+        self.transform = transforms.Compose([
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        self.objects = {}
+        self.feature_history = {}
+        self.max_objects = max_objects
+        self.max_lost_frames = 30
+        self.feature_history_length = 5
+        self.similarity_threshold = 0.75
+
+    def extract_features(self, frame, bbox):
         try:
-            self.model = YOLO(model_path)
-            self.model_name = 'YOLOv8n'
-            logger.info(f"Object detection model loaded: {self.model_name} from {model_path}")
+            x, y, w, h = map(int, bbox)
+            roi = frame[max(0, y):min(frame.shape[0], y + h),
+                       max(0, x):min(frame.shape[1], x + w)]
+            roi_pil = Image.fromarray(cv2.cvtColor(roi, cv2.COLOR_BGR2RGB))
+            roi_tensor = self.transform(roi_pil).unsqueeze(0)
+            with torch.no_grad():
+                features = self.feature_extractor(roi_tensor)
+            return features.squeeze().numpy()
         except Exception as e:
-            logger.error(f"Failed to load YOLOv8 model: {e}")
-            raise
+            logger.error(f"Feature extraction error: {e}")
+            return None
 
-    def detect(self, frame, confidence_threshold=0.3):
-        try:
-            results = self.model(frame, conf=confidence_threshold)
-            detected_objects = []
-            for result in results:
-                for box in result.boxes:
-                    x, y, w, h = box.xywh[0].tolist()
-                    scale_factor = 0.8
-                    w, h = int(w * scale_factor), int(h * scale_factor)
-                    x, y = int(x - w / 2), int(y - h / 2)
-                    confidence = float(box.conf)
-                    class_id = int(box.cls)
-                    label = self.model.names[class_id]
-                    detected_objects.append({
-                        "label": label,
-                        "bbox": [x, y, w, h],
-                        "confidence": confidence
-                    })
-            logger.info(f"Total detected objects: {len(detected_objects)} using {self.model_name}")
-            return detected_objects
-        except Exception as e:
-            logger.error(f"Detection error with {self.model_name}: {e}")
-            return []
+    def update_feature_history(self, obj_id, features):
+        if obj_id not in self.feature_history:
+            self.feature_history[obj_id] = deque(maxlen=self.feature_history_length)
+        self.feature_history[obj_id].append(features)
 
-# Define Tracker class with CSRT
-class Tracker:
-    def __init__(self):
-        self.tracker = None
-        self.bbox = None
-        self.tracker_type = 'CSRT'
-        logger.info(f"Tracking model initialized: {self.tracker_type}")
+    def compute_similarity(self, features1, features2):
+        return np.dot(features1, features2) / (np.linalg.norm(features1) * np.linalg.norm(features2))
 
-    def initialize(self, frame, bbox):
-        self.bbox = bbox
-        self.tracker = cv2.TrackerCSRT_create()
-        self.tracker.init(frame, bbox)
-        logger.info(f"Tracker initialized with {self.tracker_type} at bbox {bbox}")
+    def get_average_features(self, obj_id):
+        if obj_id in self.feature_history:
+            features_list = list(self.feature_history[obj_id])
+            return np.mean(features_list, axis=0)
+        return None
 
-    def update(self, frame):
-        if self.tracker is None:
-            return False, self.bbox
-        success, new_bbox = self.tracker.update(frame)
-        if success:
-            self.bbox = new_bbox
-            logger.debug(f"Tracker {self.tracker_type} updated successfully to bbox {new_bbox}")
-        else:
-            logger.warning(f"Tracker {self.tracker_type} lost object")
-        return success, self.bbox
-
-# Memory for learned objects
-class ObjectMemory:
-    def __init__(self):
-        self.objects = {}  # {id: {"label": str, "bbox": list, "last_seen": float}}
-
-    def add_object(self, label, bbox):
+    def add_object(self, frame, label, bbox):
+        features = self.extract_features(frame, bbox)
+        if features is None:
+            return None
         obj_id = f"{label}_{len(self.objects)}"
-        self.objects[obj_id] = {"label": label, "bbox": bbox, "last_seen": time.time()}
-        logger.info(f"Memorized object {obj_id} with bbox {bbox}")
+        self.objects[obj_id] = {
+            "label": label,
+            "bbox": bbox,
+            "features": features,
+            "last_seen": time.time(),
+            "lost_count": 0
+        }
+        self.update_feature_history(obj_id, features)
+        logger.info(f"Added new object {obj_id} with features")
         return obj_id
 
-    def update_object(self, obj_id, bbox):
-        if obj_id in self.objects:
-            self.objects[obj_id]["bbox"] = bbox
-            self.objects[obj_id]["last_seen"] = time.time()
-
-    def get_similar(self, label, bbox, iou_threshold=0.5):
+    def find_best_match(self, frame, label, bbox):
+        current_features = self.extract_features(frame, bbox)
+        if current_features is None:
+            return None, None
+        best_match = None
+        best_similarity = self.similarity_threshold
         for obj_id, obj in self.objects.items():
-            if obj["label"] == label:
+            if obj["label"] == label and obj["lost_count"] < self.max_lost_frames:
+                avg_features = self.get_average_features(obj_id)
+                if avg_features is not None:
+                    similarity = self.compute_similarity(current_features, avg_features)
+                    if similarity > best_similarity:
+                        best_similarity = similarity
+                        best_match = obj_id
+        return best_match, current_features
+
+    def update_object(self, obj_id, frame, bbox):
+        # Skip feature extraction on update to save time
+        self.objects[obj_id].update({
+            "bbox": bbox,
+            "last_seen": time.time(),
+            "lost_count": 0
+        })
+
+    def cleanup_old_objects(self):
+        self.objects = {
+            obj_id: obj for obj_id, obj in self.objects.items()
+            if obj["lost_count"] < self.max_lost_frames
+        }
+        self.feature_history = {
+            obj_id: hist for obj_id, hist in self.feature_history.items()
+            if obj_id in self.objects
+        }
+
+    def get_similar(self, label, bbox):
+        iou_threshold = 0.3
+        for obj_id, obj in self.objects.items():
+            if obj["label"] == label and obj["lost_count"] < self.max_lost_frames:
                 iou = calculate_iou(bbox, obj["bbox"])
                 if iou > iou_threshold:
                     return obj_id
@@ -124,49 +163,72 @@ def calculate_iou(box1, box2):
 # Initialize global objects
 camera = Camera()
 detection = Detection('yolov8n.pt')
-tracker = Tracker()
-memory = ObjectMemory()
+tracker = Tracker(tracker_type='CSRT')  # Switch to CSRT for better performance
+memory = MLObjectMemory()
 tracking_enabled = False
 detected_objects = []
 current_obj_id = None
 
-try:
-    camera.initialize()
-    logger.info("Camera initialized at startup")
-except Exception as e:
-    logger.error(f"Failed to initialize camera at startup: {e}")
-
-def process_frame(frame):
-    global tracking_enabled, detected_objects, current_obj_id
-    if frame is None:
+def process_frame(frame, frame_count=0):
+    global tracking_enabled, detected_objects, current_obj_id, memory
+    if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+        logger.error("Invalid frame received in process_frame")
         return None
+
+    # Update lost counts
+    for obj_id in memory.objects:
+        memory.objects[obj_id]["lost_count"] += 1
+
+    # Process tracking
     if tracking_enabled and current_obj_id:
-        success, bbox = tracker.update(frame)
-        if success:
-            x, y, w, h = [int(v) for v in bbox]
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            cv2.putText(frame, f"Tracking {memory.objects[current_obj_id]['label']}", (20, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            memory.update_object(current_obj_id, bbox)
-        else:
+        try:
+            success, bbox = tracker.update(frame)
+            if success:
+                x, y, w, h = [int(v) for v in bbox]
+                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                cv2.putText(frame, f"Tracking {memory.objects[current_obj_id]['label']}",
+                           (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                memory.update_object(current_obj_id, frame, bbox)
+            else:
+                tracking_enabled = False
+                current_obj_id = None
+                cv2.putText(frame, "Lost", (20, 30),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        except Exception as e:
+            logger.error(f"Tracker update failed: {e}")
             tracking_enabled = False
             current_obj_id = None
-            cv2.putText(frame, "Lost", (20, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-    else:
+            cv2.putText(frame, "Tracking Error", (20, 30),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+    # Detect objects every 5 frames
+    DETECTION_INTERVAL = 5
+    if frame_count % DETECTION_INTERVAL == 0:
         detected_objects = detection.detect(frame)
         for obj in detected_objects:
-            x, y, w, h = obj['bbox']
-            similar_id = memory.get_similar(obj['label'], obj['bbox'])
-            if similar_id:
-                obj_id = similar_id
-                memory.update_object(obj_id, obj['bbox'])
-                cv2.putText(frame, f"Recognized {obj['label']}", (x, y - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+            bbox = obj['bbox']
+            label = obj['label']
+            match_id, features = memory.find_best_match(frame, label, bbox)
+            if match_id:
+                memory.update_object(match_id, frame, bbox)
+                color = (0, 255, 255)  # Yellow for recognized
+                if not tracking_enabled:
+                    current_obj_id = match_id
+                    tracker.initialize(frame, tuple(bbox))
+                    tracking_enabled = True
+                    color = (0, 255, 0)  # Green for tracked
             else:
-                obj_id = memory.add_object(obj['label'], obj['bbox'])
-            cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
-            cv2.putText(frame, f"{obj['label']} {obj['confidence']:.2f}", (x, y - 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                obj_id = memory.add_object(frame, label, bbox)
+                if obj_id:
+                    color = (255, 0, 0)  # Blue for new
+                else:
+                    continue
+            x, y, w, h = map(int, bbox)
+            cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
+            cv2.putText(frame, f"{label} {obj['confidence']:.2f}",
+                        (x, y - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    memory.cleanup_old_objects()
     return frame
 
 @app.route('/')
@@ -225,7 +287,7 @@ def start_tracking():
         if similar_id:
             current_obj_id = similar_id
         else:
-            current_obj_id = memory.add_object(label, bbox)
+            current_obj_id = memory.add_object(frame, label, bbox)
         tracker.initialize(frame, bbox)
         tracking_enabled = True
         logger.info(f"Tracking started with {tracker.tracker_type} for {current_obj_id}")
@@ -238,17 +300,16 @@ def start_tracking():
 def stop_tracking():
     global tracking_enabled, tracker, current_obj_id
     tracking_enabled = False
-    tracker = Tracker()
+    tracker = Tracker(tracker_type='CSRT')
     current_obj_id = None
     logger.info(f"Tracking stopped, reset to {tracker.tracker_type}")
     return jsonify({'status': 'success'})
 
 @app.route('/tracker_info')
 def tracker_info():
-    status = 'Tracking' if tracking_enabled else 'Idle'
     return jsonify({
         'type': tracker.tracker_type,
-        'status': status,
+        'status': 'Tracking' if tracking_enabled else 'Idle',
         'bbox': list(tracker.bbox) if tracker.bbox else None,
         'detection_model': detection.model_name,
         'memorized_objects': list(memory.objects.keys())
@@ -262,8 +323,8 @@ def system_stats():
             handle = pynvml.nvmlDeviceGetHandleByIndex(0)
             stats['gpu_percent'] = pynvml.nvmlDeviceGetUtilizationRates(handle).gpu
             mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
-            stats['gpu_mem_used'] = mem_info.used / 1024**2  # MB
-            stats['gpu_mem_total'] = mem_info.total / 1024**2  # MB
+            stats['gpu_mem_used'] = mem_info.used / 1024**2
+            stats['gpu_mem_total'] = mem_info.total / 1024**2
         except pynvml.NVMLError as e:
             logger.error(f"GPU stats error: {e}")
             stats['gpu_percent'] = 0
@@ -276,28 +337,57 @@ def system_stats():
     return jsonify(stats)
 
 def generate_frames():
+    frame_count = 0
     while True:
+        start_time = time.time()
         if camera.cap is None or not camera.cap.isOpened():
-            logger.warning("Camera not initialized or stopped, waiting...")
-            time.sleep(0.1)
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, "Camera stopped", (50, 240), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            logger.warning("Camera not initialized or stopped")
+            frame = np.zeros((240, 320, 3), dtype=np.uint8)
+            cv2.putText(frame, "Camera stopped", (20, 120),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         else:
             frame = camera.get_frame()
-            if frame is None:
+            if frame is None or not isinstance(frame, np.ndarray) or frame.size == 0:
+                logger.warning("Failed to get valid frame from camera")
+                frame = np.zeros((240, 320, 3), dtype=np.uint8)
+                cv2.putText(frame, "No camera feed", (20, 120),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+            else:
+                frame = process_frame(frame, frame_count)
+                frame_count += 1
+                if frame is None:
+                    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+                    cv2.putText(frame, "Processing error", (20, 120),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        fps = 1 / (time.time() - start_time)
+        cv2.putText(frame, f"FPS: {fps:.2f}", (20, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+        logger.info(f"FPS: {fps:.2f}")
+
+        try:
+            ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if not ret:
+                logger.error("Failed to encode frame")
                 continue
-            frame = process_frame(frame)
-            if frame is None:
-                continue
-        ret, buffer = cv2.imencode('.jpg', frame)
-        if not ret:
+            yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' +
+                   buffer.tobytes() + b'\r\n')
+        except Exception as e:
+            logger.error(f"Frame encoding/streaming error: {e}")
             continue
-        yield (b'--frame\r\nContent-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        time.sleep(0.05)
 
 @app.route('/video_feed')
 def video_feed():
-    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+    return Response(generate_frames(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
+    try:
+        camera.initialize()
+        camera.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Lower resolution
+        camera.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+        logger.info("Camera initialized at startup with 320x240 resolution")
+    except Exception as e:
+        logger.error(f"Failed to initialize camera at startup: {e}")
+
     app.run(debug=True, host='0.0.0.0', port=5500)

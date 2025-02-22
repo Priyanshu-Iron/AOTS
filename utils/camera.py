@@ -6,7 +6,6 @@ class Camera:
         self.cap = None
 
     def initialize(self):
-        """Initialize the camera (webcam for now)."""
         if self.cap is not None:
             self.cap.release()
         if platform.system() == 'Darwin':  # macOS
@@ -15,11 +14,10 @@ class Camera:
             self.cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         if not self.cap.isOpened():
             raise RuntimeError("Could not open camera")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # Adjusted in app.py
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
 
     def get_frame(self):
-        """Capture and return a frame from the camera."""
         if self.cap is None or not self.cap.isOpened():
             return None
         ret, frame = self.cap.read()
@@ -28,6 +26,5 @@ class Camera:
         return frame
 
     def release(self):
-        """Release the camera resource."""
         if self.cap is not None:
             self.cap.release()
